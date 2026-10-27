@@ -1,0 +1,83 @@
+/* ===== 後端連線：正式模式呼叫 Apps Script；測試模式在瀏覽器內模擬 ===== */
+const MOCK=!window.POS_API_URL;const LOCAL=/^(localhost|127\.0\.0\.1|)$/.test(location.hostname);
+function mockDb(){let d=localStorage.getItem('mockdb');if(d)return JSON.parse(d);const db={};Object.keys(TABLES).forEach(k=>db[k]=[]);seed(db,window.MOCK_PW||{});localStorage.setItem('mockdb',JSON.stringify(db));return db}
+const mockSess={get:t=>JSON.parse(localStorage.getItem('ms_'+t)||'null'),set:(t,v)=>localStorage.setItem('ms_'+t,JSON.stringify(v)),del:t=>localStorage.removeItem('ms_'+t)};
+async function rawApi(action,payload){const req={action,payload,token:S.token};
+  if(MOCK){if(localStorage.getItem('mockOffline'))throw new Error('offline');const db=mockDb();let r;try{r=handle(db,mockSess,req)}catch(e){r={ok:false,error:e.message}}localStorage.setItem('mockdb',JSON.stringify(db));return r}
+  const res=await fetch(window.POS_API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(req)});return res.json()}
+async function api(action,payload){const r=await rawApi(action,payload);if(r.relogin){logout(true);throw new Error(r.error)}if(!r.ok)throw new Error(r.error);return r}
+/* ===== 離線佇列 ===== */
+const Q={get:()=>JSON.parse(localStorage.getItem('queue')||'[]'),set:q=>localStorage.setItem('queue',JSON.stringify(q))};
+async function queued(action,payload){payload.clientId=payload.clientId||uid('c');payload.time=payload.time||now();
+  try{return await api(action,payload)}catch(e){if(/offline|Failed to fetch|NetworkError/.test(e.message)||!navigator.onLine){Q.set([...Q.get(),{action,payload}]);netUI();return{ok:true,queued:true}}throw e}}
+async function flush(){const q=Q.get();if(!q.length||!S.token)return;const left=[];for(const x of q){try{await api(x.action,x.payload)}catch(e){left.push(x)}}Q.set(left);netUI()}
+function netUI(){const n=Q.get().length,off=!navigator.onLine||localStorage.getItem('mockOffline');const el=$('#net');el.textContent=(off?'離線':'連線中')+(n?`・待上傳 ${n} 筆`:'')+(MOCK?'・測試模式':'');el.className=off?'off':''}
+addEventListener('online',()=>{netUI();flush()});addEventListener('offline',netUI);setInterval(flush,30000);
+/* ===== 工具 ===== */
+const $=s=>document.querySelector(s),app=$('#app');const S=JSON.parse(sessionStorage.getItem('S')||'{}');
+const money=n=>'$'+Math.round(n).toLocaleString();const today=()=>new Date().toLocaleDateString('sv');const month=()=>today().slice(0,7);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const lt=t=>new Date(t).toLocaleString('zh-TW',{hour12:false});const ld=t=>new Date(t).toLocaleDateString('sv');
+function csv(name,rows){const s='\ufeff'+rows.map(r=>r.map(c=>'"'+String(c??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([s],{type:'text/csv'}));a.download=name+'.csv';a.click()}
+function msg(t){const m=document.createElement('div');m.className='msg';m.textContent=t;app.prepend(m);setTimeout(()=>m.remove(),4000)}
+/* ===== 登入 ===== */
+function loginView(){if(MOCK&&(!LOCAL||!window.MOCK_PW)){$('#logout').hidden=true;app.innerHTML=`<div class="card login"><h2>後端尚未連接，目前為展示版</h2><p>此頁面為多元就業 POS 試用版的公開展示，尚未連接 Google 試算表後端，因此暫不開放登入。</p><p><small>正式上線後將由管理者發放帳號。</small></p></div>`;return}$('#logout').hidden=true;$('#who').textContent='';app.innerHTML=`<div class="card login"><h2>登入</h2><input id="u" placeholder="帳號" autocomplete="username"><input id="p" type="password" placeholder="密碼" autocomplete="current-password"><button id="go">登入</button><p id="err" style="color:#c0392b"></p></div>`;
+  const go=async()=>{try{const r=await api('login',{username:$('#u').value.trim(),password:$('#p').value});Object.assign(S,r);sessionStorage.setItem('S',JSON.stringify(S));route()}catch(e){$('#err').textContent=e.message}};$('#go').onclick=go;$('#p').onkeydown=e=>e.key==='Enter'&&go()}
+function logout(silent){if(!silent)api('logout').catch(()=>{});sessionStorage.removeItem('S');for(const k in S)delete S[k];loginView()}
+$('#logout').onclick=()=>logout();
+function route(){netUI();if(!S.token)return loginView();$('#logout').hidden=false;$('#who').textContent=S.role==='admin'?'總管理：'+S.username:S.storeName+'｜'+S.username;flush();S.role==='admin'?adminView('overview'):storeView('pos')}
+/* ===== 單店 ===== */
+let cart=[],items=[];
+function tabs(list,cur,fn){return`<div class="tabs">${list.map(([k,t])=>`<button class="${k===cur?'on':''}" onclick="${fn}('${k}')">${t}</button>`).join('')}</div>`}
+async function storeView(tab){app.innerHTML=tabs([['pos','收銀'],['expense','記支出'],['day','日結'],['month','月報表'],['items','品項價格']],tab,'storeView')+'<div id="v"></div>';
+  try{items=(await api('items',{})).items;localStorage.setItem('items_'+S.storeId,JSON.stringify(items))}catch(e){items=JSON.parse(localStorage.getItem('items_'+S.storeId)||'[]')}
+  ({pos:posTab,expense:expTab,day:()=>dayTab(S.storeId,'#v'),month:()=>monthTab(S.storeId,'#v'),items:itemsTab})[tab]()}
+function posTab(){const act=items.filter(i=>tb(i.active));$('#v').innerHTML=`<div class="pos"><div class="grid">${act.map(i=>`<button class="item" onclick="add('${i.id}')">${esc(i.name)}<small>${money(i.price)}</small></button>`).join('')||'尚無品項，請先到「品項價格」新增'}</div>
+  <div class="card"><h3>本筆</h3><table id="cart"></table><div class="row"><span>合計</span><span class="total" id="tot">$0</span></div>
+  <div class="row"><span>收現金</span><input id="paid" type="number" inputmode="numeric"></div><div class="quick" id="quick"></div><div class="row"><span>找零</span><b id="chg" style="font-size:26px">$0</b></div>
+  <button class="big" onclick="checkout()">結帳</button><br><br><button class="sec" onclick="cart=[];drawCart()">清除</button></div></div>`;$('#paid').oninput=drawCart;drawCart()}
+function add(id){const i=items.find(x=>x.id===id);const c=cart.find(x=>x.id===id);c?c.qty++:cart.push({id,name:i.name,price:+i.price,qty:1});drawCart()}
+function chQty(id,d){const c=cart.find(x=>x.id===id);c.qty+=d;if(c.qty<=0)cart=cart.filter(x=>x!==c);drawCart()}
+function drawCart(){const t=cart.reduce((s,c)=>s+c.price*c.qty,0);$('#cart').innerHTML=cart.map(c=>`<tr><td>${esc(c.name)}</td><td><button class="sec" onclick="chQty('${c.id}',-1)">－</button> ${c.qty} <button class="sec" onclick="chQty('${c.id}',1)">＋</button></td><td>${money(c.price*c.qty)}</td></tr>`).join('');
+  $('#tot').textContent=money(t);const p=+$('#paid').value||0;$('#chg').textContent=p?money(p-t):'$0';$('#chg').style.color=p&&p<t?'#c0392b':'';
+  $('#quick').innerHTML=[t,100,500,1000].filter((v,i,a)=>v>0&&a.indexOf(v)===i&&v>=t).map(v=>`<button onclick="$('#paid').value=${v};drawCart()">${v===t?'剛好':money(v)}</button>`).join('')}
+async function checkout(){const t=cart.reduce((s,c)=>s+c.price*c.qty,0);if(!t)return;const p=+$('#paid').value||t;if(p<t)return alert('收款金額不足');
+  try{const r=await queued('sale',{lines:cart.map(({id,name,price,qty})=>({id,name,price,qty})),paid:p});msg((r.queued?'已暫存（離線），連線後自動上傳。':'結帳完成。')+' 找零 '+money(p-t));cart=[];$('#paid').value='';drawCart()}catch(e){alert(e.message)}}
+function expTab(){$('#v').innerHTML=`<div class="card" style="max-width:480px"><h3>記一筆支出</h3><select id="cat">${['進貨','材料','雜支','水電','交通','其他'].map(c=>`<option>${c}</option>`).join('')}</select><br><br><input id="amt" type="number" inputmode="numeric" placeholder="金額"><br><br><input id="note" placeholder="說明（例：菜市場買菜）"><br><br><button class="big" id="save">儲存支出</button></div>`;
+  $('#save').onclick=async()=>{try{const r=await queued('expense',{category:$('#cat').value,amount:+$('#amt').value,note:$('#note').value});msg(r.queued?'已暫存（離線）':'已記錄支出');$('#amt').value='';$('#note').value=''}catch(e){alert(e.message)}}}
+function itemsTab(){$('#v').innerHTML=`<div class="card"><h3>品項與價格</h3><table>${items.map(i=>`<tr><td><input value="${esc(i.name)}" id="n_${i.id}"></td><td><input type="number" value="${i.price}" id="p_${i.id}"></td><td><label><input type="checkbox" style="width:auto" id="a_${i.id}" ${tb(i.active)?'checked':''}>上架</label></td><td><button onclick="saveItem('${i.id}')">存</button></td></tr>`).join('')}
+  <tr><td><input id="n_new" placeholder="新品名"></td><td><input type="number" id="p_new" placeholder="價格"></td><td></td><td><button onclick="saveItem()">新增</button></td></tr></table></div>`}
+async function saveItem(id){const k=id||'new';try{await api('saveItem',{id,name:$('#n_'+k).value.trim(),price:+$('#p_'+k).value,active:id?$('#a_'+k).checked:true});msg('已儲存');storeView('items')}catch(e){alert(e.message)}}
+async function voidRec(kind,id,back){const reason=prompt('作廢原因（必填，資料不會刪除，只標記作廢）');if(!reason)return;try{await api('void',{kind,id,reason});back()}catch(e){alert(e.message)}}
+async function dayTab(storeId,sel){const d=$('#dd')?.value||today();const r=await api('records',{storeId,prefix:''});const f=x=>ld(x.time)===d;const sales=r.sales.filter(f),exps=r.expenses.filter(f);
+  const inc=sales.filter(x=>!tb(x.void)).reduce((s,x)=>s+ +x.total,0),out=exps.filter(x=>!tb(x.void)).reduce((s,x)=>s+ +x.amount,0);const back=()=>dayTab(storeId,sel);window._back=back;
+  $(sel).innerHTML=`<div class="card"><div class="row"><span>日期</span><input type="date" id="dd" value="${d}" onchange="_back()"></div><span class="stat">營業收入<b>${money(inc)}</b></span><span class="stat">支出<b>${money(out)}</b></span><span class="stat">現金應有（收入−支出）<b>${money(inc-out)}</b></span><span class="stat">筆數<b>${sales.filter(x=>!tb(x.void)).length}</b></span></div>
+  <div class="card"><h3>銷售明細</h3><table><tr><th>時間</th><th>內容</th><th>金額</th><th>人員</th><th></th></tr>${sales.map(x=>`<tr class="${tb(x.void)?'void':''}"><td>${lt(x.time).slice(-8)}</td><td>${JSON.parse(x.lines).map(l=>esc(l.name)+'×'+l.qty).join('、')}</td><td>${money(x.total)}</td><td>${esc(x.account)}</td><td>${tb(x.void)?'已作廢':`<button class="warn" onclick="voidRec('sale','${x.id}',_back)">作廢</button>`}</td></tr>`).join('')}</table>
+  <h3>支出明細</h3><table>${exps.map(x=>`<tr class="${tb(x.void)?'void':''}"><td>${lt(x.time).slice(-8)}</td><td>${esc(x.category)} ${esc(x.note)}</td><td>${money(x.amount)}</td><td>${esc(x.account)}</td><td>${tb(x.void)?'已作廢':`<button class="warn" onclick="voidRec('exp','${x.id}',_back)">作廢</button>`}</td></tr>`).join('')}</table><br><button class="sec" onclick="print()">列印日結單</button></div>`}
+async function monthTab(storeId,sel){const m=$('#mm')?.value||month();const r=await api('records',{storeId,prefix:''});const st=(r.stores.find(s=>s.id===storeId)||{}).name||S.storeName;
+  const sales=r.sales.filter(x=>ld(x.time).startsWith(m)&&!tb(x.void)),exps=r.expenses.filter(x=>ld(x.time).startsWith(m)&&!tb(x.void));const days={};
+  sales.forEach(x=>{const d=ld(x.time);(days[d]=days[d]||{i:0,o:0,n:0}).i+= +x.total;days[d].n++});exps.forEach(x=>{const d=ld(x.time);(days[d]=days[d]||{i:0,o:0,n:0}).o+= +x.amount});
+  const keys=Object.keys(days).sort(),I=sales.reduce((s,x)=>s+ +x.total,0),O=exps.reduce((s,x)=>s+ +x.amount,0);window._mback=()=>monthTab(storeId,sel);
+  window._exp1=()=>csv(`${st}_${m}_月收支表`,[[`單位：${st}`],[`期間：${m}`],['日期','營業收入','支出','結餘','交易筆數'],...keys.map(d=>[d,days[d].i,days[d].o,days[d].i-days[d].o,days[d].n]),['合計',I,O,I-O,sales.length],[],['製表人：','','覆核：','','主管：']]);
+  window._exp2=()=>csv(`${st}_${m}_營業收入明細`,[[`單位：${st}　期間：${m}`],['日期時間','單號','品項','數量','單價','小計','收款','找零','經手人'],...sales.flatMap(x=>JSON.parse(x.lines).map((l,i)=>[lt(x.time),x.id,l.name,l.qty,l.price,l.qty*l.price,i?'':x.paid,i?'':x.change,x.account])),['合計','','','','',I]]);
+  window._exp3=()=>csv(`${st}_${m}_支出明細`,[[`單位：${st}　期間：${m}`],['日期時間','單號','類別','說明','金額','經手人'],...exps.map(x=>[lt(x.time),x.id,x.category,x.note,x.amount,x.account]),['合計','','','',O]]);
+  $(sel).innerHTML=`<div class="card"><div class="row"><span>月份</span><input type="month" id="mm" value="${m}" onchange="_mback()"></div><span class="stat">月營業收入<b>${money(I)}</b></span><span class="stat">月支出<b>${money(O)}</b></span><span class="stat">結餘<b>${money(I-O)}</b></span>
+  <p><button onclick="_exp1()">匯出 月收支表</button> <button onclick="_exp2()">匯出 營業收入明細</button> <button onclick="_exp3()">匯出 支出明細</button></p><small>匯出為 CSV，可直接用 Excel 開啟；作廢單據不計入。</small></div>
+  <div class="card"><table><tr><th>日期</th><th>收入</th><th>支出</th><th>結餘</th><th>筆數</th></tr>${keys.map(d=>`<tr><td>${d}</td><td>${money(days[d].i)}</td><td>${money(days[d].o)}</td><td>${money(days[d].i-days[d].o)}</td><td>${days[d].n}</td></tr>`).join('')}</table></div>`}
+/* ===== 總管理 ===== */
+async function adminView(tab){app.innerHTML=tabs([['overview','總覽與排行'],['stores','店家與帳號'],['report','單店報表'],['audit','稽核紀錄']],tab,'adminView')+'<div id="v"></div>';try{await({overview:aOverview,stores:aStores,report:aReport,audit:aAudit})[tab]()}catch(e){alert(e.message)}}
+async function aOverview(){const m=$('#am')?.value||month();const r=await api('records',{prefix:''});const rows=r.stores.map(s=>{const sa=r.sales.filter(x=>x.storeId===s.id&&!tb(x.void)&&ld(x.time).startsWith(m)),ex=r.expenses.filter(x=>x.storeId===s.id&&!tb(x.void)&&ld(x.time).startsWith(m));
+  const i=sa.reduce((a,x)=>a+ +x.total,0),o=ex.reduce((a,x)=>a+ +x.amount,0);return{n:s.name,act:tb(s.active),i,o,c:sa.length}}).sort((a,b)=>b.i-a.i);const T=rows.reduce((a,x)=>({i:a.i+x.i,o:a.o+x.o}),{i:0,o:0});
+  window._ov=aOverview;window._ovx=()=>csv('各店收支總表_'+m,[['排名','店家','狀態','營業收入','支出','結餘','筆數'],...rows.map((x,k)=>[k+1,x.n,x.act?'營業中':'停用',x.i,x.o,x.i-x.o,x.c]),['','合計','',T.i,T.o,T.i-T.o]]);
+  $('#v').innerHTML=`<div class="card"><div class="row"><span>月份</span><input type="month" id="am" value="${m}" onchange="_ov()"></div><span class="stat">全部店家收入<b>${money(T.i)}</b></span><span class="stat">全部支出<b>${money(T.o)}</b></span><span class="stat">結餘<b>${money(T.i-T.o)}</b></span> <button onclick="_ovx()">匯出 Excel(CSV)</button></div>
+  <div class="card"><h3>營收排行</h3><table><tr><th>名次</th><th>店家</th><th>收入</th><th>支出</th><th>結餘</th><th>筆數</th></tr>${rows.map((x,k)=>`<tr><td>${k+1}</td><td>${esc(x.n)}${x.act?'':'（停用）'}</td><td>${money(x.i)}</td><td>${money(x.o)}</td><td>${money(x.i-x.o)}</td><td>${x.c}</td></tr>`).join('')}</table></div>`}
+async function aStores(){const r=await api('stores',{});$('#v').innerHTML=`<div class="card"><h3>店家</h3><table><tr><th>店名</th><th>狀態</th><th>帳號</th><th></th></tr>${r.stores.map(s=>`<tr><td><input id="sn_${s.id}" value="${esc(s.name)}"></td><td>${tb(s.active)?'營業中':'停用'}</td><td>${r.accounts.filter(a=>a.storeId===s.id).map(a=>esc(a.username)).join('、')||'—'}</td>
+  <td><button onclick="saveStore('${s.id}')">存名稱</button> <button class="${tb(s.active)?'warn':''}" onclick="saveStore('${s.id}',${!tb(s.active)})">${tb(s.active)?'停用':'啟用'}</button></td></tr>`).join('')}
+  <tr><td><input id="sn_new" placeholder="新店名"></td><td></td><td></td><td><button onclick="saveStore()">新增店家</button></td></tr></table></div>
+  <div class="card" style="max-width:520px"><h3>設定／重設店家帳號密碼</h3><select id="as">${r.stores.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select><br><br><input id="au" placeholder="帳號（英數）"><br><br><input id="ap" type="password" placeholder="密碼（至少 6 碼）"><br><br><button onclick="setAcc()">儲存帳號</button><p><small>密碼只以加鹽雜湊保存，系統內任何人都看不到原密碼。</small></p></div>`}
+async function saveStore(id,active){try{await api('saveStore',{id,name:$('#sn_'+(id||'new')).value.trim(),active});adminView('stores')}catch(e){alert(e.message)}}
+async function setAcc(){try{await api('setAccount',{storeId:$('#as').value,username:$('#au').value.trim(),password:$('#ap').value,role:'store'});msg('帳號已設定');adminView('stores')}catch(e){alert(e.message)}}
+async function aReport(){const r=await api('stores',{});const cur=window._rs||r.stores[0]?.id;$('#v').innerHTML=`<div class="card"><select id="rs" onchange="_rs=this.value;adminView('report')">${r.stores.map(s=>`<option value="${s.id}" ${s.id===cur?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div><div id="r1"></div><div id="r2"></div>`;await monthTab(cur,'#r1');}
+async function aAudit(){const r=await api('auditLog',{});$('#v').innerHTML=`<div class="card"><h3>稽核紀錄（最近 300 筆）</h3><button onclick='csv("稽核紀錄",[["時間","帳號","動作","內容"],...${JSON.stringify(r.audit.map(a=>[a.time,a.account,a.action,a.detail])).replace(/'/g,"&#39;")}])'>匯出</button><table><tr><th>時間</th><th>帳號</th><th>動作</th><th>內容</th></tr>${r.audit.map(a=>`<tr><td>${lt(a.time)}</td><td>${esc(a.account)}</td><td>${esc(a.action)}</td><td><small>${esc(a.detail).slice(0,80)}</small></td></tr>`).join('')}</table></div>`}
+if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js');
+route();

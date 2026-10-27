@@ -1,0 +1,16 @@
+*{box-sizing:border-box}body{margin:0;font-family:"Noto Sans TC",system-ui,sans-serif;background:#f3f6f5;font-size:18px;color:#222}
+header{background:#1f6f5c;color:#fff;padding:10px 14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}header b{font-size:20px}#who{flex:1}
+#net{font-size:14px;padding:2px 8px;border-radius:10px;background:#2e9d6f}#net.off{background:#c0392b}
+main{padding:12px;max-width:1100px;margin:auto}footer{text-align:center;color:#888;font-size:13px;padding:16px}
+button{font-size:18px;padding:10px 16px;border:0;border-radius:10px;background:#1f6f5c;color:#fff;cursor:pointer}button.sec{background:#888}button.warn{background:#c0392b}
+input,select{font-size:18px;padding:10px;border:1px solid #bbb;border-radius:8px;width:100%}
+.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 1px 4px #0001}
+.login{max-width:380px;margin:40px auto}.login input{margin-bottom:12px}.login button{width:100%}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}.tabs button{background:#cfe3dc;color:#1f6f5c}.tabs button.on{background:#1f6f5c;color:#fff}
+.pos{display:grid;grid-template-columns:2fr 1fr;gap:12px}@media(max-width:760px){.pos{grid-template-columns:1fr}}
+.grid{display:grid;align-content:start;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+.item{background:#fff;border:2px solid #1f6f5c;color:#1f6f5c;height:96px;font-size:19px;display:flex;flex-direction:column;justify-content:center}.item small{font-size:16px;color:#555}
+table{width:100%;border-collapse:collapse;font-size:16px}td,th{border-bottom:1px solid #eee;padding:6px;text-align:left}tr.void td{color:#aaa;text-decoration:line-through}
+.total{font-size:30px;font-weight:bold;color:#c0392b}.row{display:flex;gap:8px;align-items:center;margin:6px 0}.row>*{flex:1}
+.quick button{background:#e8f0ee;color:#1f6f5c;margin:3px}.big{font-size:22px;width:100%;padding:16px}.msg{padding:10px;border-radius:8px;background:#fff3cd;margin:8px 0}
+.stat{display:inline-block;margin-right:24px}.stat b{display:block;font-size:24px}
