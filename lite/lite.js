@@ -6,7 +6,7 @@ const money=n=>'$'+Math.round(n).toLocaleString();const today=()=>new Date().toL
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const PAYS=['現金','LINE Pay','街口支付','悠遊卡','其他'];const CATS=['進貨','材料','雜支','水電','交通','其他'];
 const STORES=[['store2','林內驛站'],['store3','古坑咖啡合作社'],['store1','苗栗桂妃油茶']];
-let S=LS.g('sess',{}),cart=[],pay='現金',tab='sale';
+let S=LS.g('sess',{}),cart=[],pay='現金',tab='sale',disc=null,discOpen=false;
 /* ===== 後端 ===== */
 function mockDb(){let d=localStorage.getItem('mockdb');if(d)return JSON.parse(d);const db={};Object.keys(TABLES).forEach(k=>db[k]=[]);seed(db,window.MOCK_PW||{});
   const m={linnei:'store2',gukeng:'store3',guifei:'store1'};db.accounts.forEach(a=>{if(m[a.username])a.username=m[a.username]});localStorage.setItem('mockdb',JSON.stringify(db));return db}
@@ -53,7 +53,8 @@ function start(){$('#logout').hidden=false;$('#who').textContent=S.storeName||''
 function draw(){app.innerHTML=`<div class="tabs">${[['sale','結帳'],['exp','記支出'],['day','今日小計']].map(([k,n])=>`<button data-t="${k}" class="${tab===k?'on':''}">${n}</button>`).join('')}</div><div id="body"></div>`;
   app.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{tab=b.dataset.t;draw()});({sale:saleView,exp:expView,day:dayView})[tab]()}
 function saleView(){const its=items();$('#body').innerHTML=`<div class="pos"><div class="grid" id="grid">${its.length?its.map(i=>`<button class="it" data-id="${esc(i.id)}">${esc(i.name)}<small>${money(i.price)}</small></button>`).join(''):'<div class="card">商品載入中…（第一次需要連線）</div>'}</div>
-<div class="card cart"><div id="lines"></div><div class="tot" id="tot">$0</div>
+<div class="card cart"><div id="lines"></div><div class="sub" id="sub"></div><div class="tot" id="tot">$0</div>
+<button class="sec dbtn" id="dbtn">折扣</button><div class="dpanel" id="dpanel" hidden>${[['a',10,'減$10'],['a',50,'減$50'],['a',0,'減自訂'],['p',95,'95折'],['p',90,'9折'],['p',80,'8折'],['p',0,'自訂折'],['x',0,'取消折扣']].map(([t,v,n])=>`<button data-dt="${t}" data-dv="${v}" class="${t==='x'?'sec':''}">${n}</button>`).join('')}</div>
 <div class="pays">${PAYS.map(p=>`<button data-p="${p}">${p}</button>`).join('')}</div>
 <div id="cash"><div class="row"><span>收現金</span><input id="paid" type="number" inputmode="numeric" placeholder="免填＝剛好"></div><div class="quick">${[100,500,1000].map(v=>`<button data-q="${v}">${v}</button>`).join('')}<button data-q="0">剛好</button></div><div class="row" style="margin-top:6px"><span>找零</span><b id="chg" style="font-size:26px">$0</b></div></div>
 <button class="go" id="pay">結帳</button><button class="sec" id="clr">清空</button></div></div>`;
@@ -61,17 +62,25 @@ function saleView(){const its=items();$('#body').innerHTML=`<div class="pos"><di
   $('#grid').onclick=e=>{const b=e.target.closest('.it');if(!b)return;const it=byId[b.dataset.id],l=cart.find(x=>x.id===it.id);if(l)l.qty++;else cart.push({id:it.id,name:it.name,price:+it.price,qty:1});drawCart()};
   $('#body').querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{pay=b.dataset.p;drawCart()});
   $('#body').querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>{$('#paid').value=+b.dataset.q?(+$('#paid').value||0)+ +b.dataset.q:'';drawCart()});
-  $('#paid').oninput=drawCart;$('#clr').onclick=()=>{cart=[];$('#paid').value='';drawCart()};$('#pay').onclick=checkout;
+  $('#dbtn').onclick=()=>{discOpen=!discOpen;drawCart()};
+  $('#dpanel').onclick=e=>{const b=e.target.closest('[data-dt]');if(!b)return;let t=b.dataset.dt,v=+b.dataset.dv;
+    if(t==='x')disc=null;else{if(!v){const r=prompt(t==='a'?'減多少元？':'打幾折？（例：85＝85折，7＝7折）');if(r===null)return;v=+r;if(t==='p'&&v>0&&v<10)v*=10;if(!(v>0)||(t==='p'&&v>=100))return toast('數字不正確')}
+      disc={t,v,n:t==='a'?'減$'+v:(v%10?v:v/10)+'折'}}discOpen=false;drawCart()};
+  $('#paid').oninput=drawCart;$('#clr').onclick=()=>{cart=[];disc=null;$('#paid').value='';drawCart()};$('#pay').onclick=checkout;
   $('#lines').onclick=e=>{const b=e.target.closest('[data-d]');if(!b)return;const l=cart[+b.dataset.i];l.qty+= +b.dataset.d;if(l.qty<=0)cart.splice(+b.dataset.i,1);drawCart()};drawCart()}
-const total=()=>cart.reduce((s,l)=>s+l.price*l.qty,0);
+const subtotal=()=>cart.reduce((s,l)=>s+l.price*l.qty,0);
+const discAmt=()=>{const s=subtotal();if(!disc||!s)return 0;return Math.min(s,disc.t==='a'?disc.v:Math.round(s*(100-disc.v)/100))};
+const total=()=>Math.max(0,subtotal()-discAmt());
 function drawCart(){const t=total();$('#lines').innerHTML=cart.length?cart.map((l,i)=>`<div class="ln"><span>${esc(l.name)}<br><small>${money(l.price)} × ${l.qty}</small></span><button class="sec" data-i="${i}" data-d="-1">−</button><b>${l.qty}</b><button data-i="${i}" data-d="1">＋</button></div>`).join(''):'<div style="color:#888">點左邊商品加入</div>';
-  $('#tot').textContent=money(t);$('#body').querySelectorAll('[data-p]').forEach(b=>b.classList.toggle('on',b.dataset.p===pay));$('#cash').style.display=pay==='現金'?'':'none';
+  const d=discAmt();$('#sub').innerHTML=d?`小計 ${money(subtotal())}　<span class="dv">折扣 ${esc(disc.n)} −${money(d)}</span>`:'';$('#tot').textContent=money(t);
+  $('#dbtn').textContent=disc?'折扣：'+disc.n:'折扣';$('#dbtn').classList.toggle('on',!!disc);$('#dpanel').hidden=!discOpen;$('#body').querySelectorAll('[data-p]').forEach(b=>b.classList.toggle('on',b.dataset.p===pay));$('#cash').style.display=pay==='現金'?'':'none';
   const p=+$('#paid').value||t;$('#chg').textContent=money(Math.max(0,p-t));$('#grid').querySelectorAll('.it').forEach(b=>{const l=cart.find(x=>x.id===b.dataset.id);let i=b.querySelector('i');if(l){if(!i){i=document.createElement('i');b.appendChild(i)}i.textContent=l.qty}else if(i)i.remove()})}
 function checkout(){const t0=performance.now(),t=total();if(!cart.length)return toast('購物車是空的');
-  const paid=pay==='現金'?(+$('#paid').value||t):t;if(paid<t)return toast('收現金不足');
-  const p={clientId:uid('c')+'|'+pay,time:new Date().toISOString(),lines:cart.map(({id,name,price,qty})=>({id,name,price,qty})),paid};
-  enqueue('sale',p);addLedger({k:'sale',day:today(),time:p.time,total:t,pay,clientId:p.clientId,n:cart.reduce((s,l)=>s+l.qty,0)});
-  cart=[];$('#paid').value='';drawCart();const ms=performance.now()-t0;window.lastCheckoutMs=ms;toast(`✔ 結帳完成 ${money(t)}`+(paid>t?`　找零 ${money(paid-t)}`:''))}
+  const paid=pay==='現金'?(+$('#paid').value||t):t;if(paid<t)return toast('收現金不足');const d=discAmt(),lines=cart.map(({id,name,price,qty})=>({id,name,price,qty}));
+  if(d)lines.push({id:'DISC',name:'折扣',price:-d,qty:1});
+  const p={clientId:uid('c')+'|'+pay+(d?'|D'+d:''),time:new Date().toISOString(),lines,paid:paid||0};
+  enqueue('sale',p);addLedger({k:'sale',day:today(),time:p.time,total:t,disc:d,pay,clientId:p.clientId,n:cart.reduce((s,l)=>s+l.qty,0)});
+  cart=[];disc=null;$('#paid').value='';drawCart();const ms=performance.now()-t0;window.lastCheckoutMs=ms;toast(`✔ 結帳完成 ${money(t)}`+(paid>t?`　找零 ${money(paid-t)}`:''))}
 function expView(){$('#body').innerHTML=`<div class="card" style="max-width:520px;display:flex;flex-direction:column;gap:10px">
 <div class="pays" id="cats">${CATS.map((c,i)=>`<button data-c="${c}" class="${i==0?'on':''}">${c}</button>`).join('')}</div>
 <input id="amt" type="number" inputmode="numeric" placeholder="金額"><input id="note" placeholder="備註（可不填）"><button class="go" id="save">記一筆支出</button></div>`;
@@ -83,7 +92,7 @@ function dayView(){const L=ledger(),q=new Set(Q().map(x=>x.payload.clientId)),s=
   const byPay={};s.forEach(x=>byPay[x.pay]=(byPay[x.pay]||0)+x.total);
   $('#body').innerHTML=`<div class="kpi"><div>今日營收<b>${money(sum(s))}</b></div><div>交易筆數<b>${s.length}</b></div><div>今日支出<b>${money(sum(e))}</b></div><div>今日淨額<b>${money(sum(s)-sum(e))}</b></div></div>
 <p>${Object.entries(byPay).map(([k,v])=>`${esc(k)} ${money(v)}`).join('　')||'今天還沒有交易'}</p>
-<table><tr><th>時間</th><th>項目</th><th>金額</th><th>狀態</th></tr>${L.slice().reverse().map(x=>`<tr><td>${new Date(x.time).toLocaleTimeString('zh-TW',{hour12:false,hour:'2-digit',minute:'2-digit'})}</td><td>${x.k==='sale'?'銷售・'+esc(x.pay)+'・'+x.n+'件':'支出・'+esc(x.cat)+(x.note?'・'+esc(x.note):'')}</td><td>${money(x.total)}</td><td>${q.has(x.clientId)?'待上傳':'已上傳'}</td></tr>`).join('')}</table>
+<table><tr><th>時間</th><th>項目</th><th>金額</th><th>狀態</th></tr>${L.slice().reverse().map(x=>`<tr><td>${new Date(x.time).toLocaleTimeString('zh-TW',{hour12:false,hour:'2-digit',minute:'2-digit'})}</td><td>${x.k==='sale'?'銷售・'+esc(x.pay)+'・'+x.n+'件'+(x.disc?'・折'+money(x.disc):''):'支出・'+esc(x.cat)+(x.note?'・'+esc(x.note):'')}</td><td>${money(x.total)}</td><td>${q.has(x.clientId)?'待上傳':'已上傳'}</td></tr>`).join('')}</table>
 <p style="color:#888;font-size:14px">今日小計只算這台裝置的紀錄。作廢、改品項請用完整版。</p>`}
 if('serviceWorker' in navigator&&!/^(localhost|127\.0\.0\.1)$/.test(location.hostname))navigator.serviceWorker.register('sw.js');
 if(S.token&&!S.expired)start();else loginView();netUI();flush();

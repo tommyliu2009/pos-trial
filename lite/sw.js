@@ -1,4 +1,4 @@
-const C='pos-lite-v1';const F=['./','index.html','lite.css','lite.js','core.js','config.js','manifest.json','icon.svg'];
+const C='pos-lite-v2';const F=['./','index.html','lite.css','lite.js','core.js','config.js','manifest.json','icon.svg'];
 self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(C).then(c=>c.addAll(F)))});
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k.startsWith('pos-lite')&&k!==C).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 /* 先回快取（秒開），背景更新 */
