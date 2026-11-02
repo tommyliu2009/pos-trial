@@ -1,6 +1,10 @@
 /* POS 核心邏輯：瀏覽器測試模式與 Apps Script 共用（同一份程式） */
-var TABLES={stores:['id','name','active','created'],items:['id','storeId','name','price','active'],sales:['id','storeId','time','account','lines','total','paid','change','void','voidBy','clientId'],expenses:['id','storeId','time','account','category','note','amount','void','voidBy','clientId'],accounts:['username','salt','hash','role','storeId','active'],audit:['time','account','action','detail']};
-var SHEET_NAMES={stores:'店家',items:'品項',sales:'銷售',expenses:'支出',accounts:'帳號',audit:'稽核紀錄'};
+var TABLES={stores:['id','name','active','created'],items:['id','storeId','name','price','active'],sales:['id','storeId','time','account','lines','total','paid','change','void','voidBy','clientId'],expenses:['id','storeId','time','account','category','note','amount','void','voidBy','clientId'],accounts:['username','salt','hash','role','storeId','active'],audit:['time','account','action','detail'],
+  cashCounts:['id','storeId','date','time','account','float','cashSales','cashExp','expected','counted','diff','note'],stock:['storeId','itemId','barcode','qty','safety','updated']};
+var SHEET_NAMES={stores:'店家',items:'品項',sales:'銷售',expenses:'支出',accounts:'帳號',audit:'稽核紀錄',cashCounts:'日結盤點',stock:'庫存'};
+/* v3（2026-11-02）：新增 renew、items 版本號、login 附商品、recordsRange、cashCount、stockList/stockSet；舊動作行為不變 */
+function itemsOf_(db,st){return db.items.filter(function(i){return i.storeId===st})}
+function ver_(a){return sha256(JSON.stringify(a)).slice(0,16)}
 function sha256(s){function r(n,x){return(x>>>n)|(x<<(32-n))}var K=[],H=[],p=2,c=0;function ip(n){for(var f=2;f*f<=n;f++)if(n%f==0)return 0;return 1}while(c<64){if(ip(p)){if(c<8)H[c]=(Math.pow(p,1/2)*4294967296)|0;K[c++]=(Math.pow(p,1/3)*4294967296)|0}p++}
 var b=unescape(encodeURIComponent(s)),w=[],l=b.length*8,i,j;for(i=0;i<b.length;i++)w[i>>2]|=b.charCodeAt(i)<<((3-i)%4)*8;w[l>>5]|=0x80<<(24-l%32);w[((l+64>>9)<<4)+15]=l;
 for(j=0;j<w.length;j+=16){var a=H.slice(0),W=[];for(i=0;i<64;i++){if(i<16)W[i]=w[j+i]|0;else{var x=W[i-15],y=W[i-2];W[i]=(W[i-16]+(r(7,x)^r(18,x)^(x>>>3))+W[i-7]+(r(17,y)^r(19,y)^(y>>>10)))|0}
@@ -17,8 +21,9 @@ function handle(db,sess,req){
   if(a==='login'){var acc=db.accounts.filter(function(x){return x.username===p.username&&tb(x.active)})[0];
     if(!acc||sha256(acc.salt+':'+p.password)!==acc.hash){audit(db,p.username||'?','登入失敗',{});return{ok:false,error:'帳號或密碼錯誤'}}
     if(acc.role==='store'){var st=db.stores.filter(function(s){return s.id===acc.storeId})[0];if(!st||!tb(st.active))return{ok:false,error:'此店家已停用'}}
-    var tok=uid('t')+uid('');sess.set(tok,{username:acc.username,role:acc.role,storeId:acc.storeId,exp:Date.now()+12*3600e3});audit(db,acc.username,'登入',{});
-    return{ok:true,token:tok,role:acc.role,storeId:acc.storeId,username:acc.username,storeName:(db.stores.filter(function(s){return s.id===acc.storeId})[0]||{}).name||''}}
+    var tok=uid('t')+uid('');var t0=Date.now();sess.set(tok,{username:acc.username,role:acc.role,storeId:acc.storeId,exp:t0+12*3600e3,loginAt:t0});audit(db,acc.username,'登入',{});
+    var its=acc.role==='store'?itemsOf_(db,acc.storeId):null;
+    return{ok:true,items:its||undefined,itemsVer:its?ver_(its):undefined,token:tok,role:acc.role,storeId:acc.storeId,username:acc.username,storeName:(db.stores.filter(function(s){return s.id===acc.storeId})[0]||{}).name||''}}
   var s=sess.get(req.token);if(!s||s.exp<Date.now())return{ok:false,error:'登入逾時，請重新登入',relogin:true};
   var admin=s.role==='admin';
   function sid(){if(admin)return p.storeId;return s.storeId}
@@ -26,7 +31,20 @@ function handle(db,sess,req){
   function own(r){if(!admin&&r.storeId!==s.storeId)throw new Error('沒有權限')}
   switch(a){
   case 'logout':sess.del(req.token);return{ok:true};
-  case 'items':return{ok:true,items:db.items.filter(function(i){return i.storeId===sid()})};
+  case 'items':var its=itemsOf_(db,sid()),v=ver_(its);if(p.ver&&p.ver===v)return{ok:true,notModified:true,itemsVer:v};return{ok:true,items:its,itemsVer:v};
+  case 'renew':var cap=(s.loginAt||(s.exp-12*3600e3))+12*3600e3;if(Date.now()>=cap)return{ok:false,error:'登入逾時，請重新登入',relogin:true};
+    var nt=uid('t')+uid('');sess.set(nt,{username:s.username,role:s.role,storeId:s.storeId,exp:cap,loginAt:s.loginAt||(s.exp-12*3600e3)});sess.del(req.token);return{ok:true,token:nt,exp:cap};
+  case 'recordsRange':var g=function(x){return(admin&&!p.storeId||x.storeId===sid())&&String(x.time)>=p.from&&String(x.time)<p.to};
+    return{ok:true,sales:db.sales.filter(g),expenses:db.expenses.filter(g),stores:db.stores};
+  case 'cashCount':if(!p.date||!(+p.counted>=0))throw new Error('請輸入實點現金');
+    var cc={id:uid('K'),storeId:sid(),date:p.date,time:now(),account:s.username,float:+p.float||0,cashSales:+p.cashSales||0,cashExp:+p.cashExp||0,expected:+p.expected||0,counted:+p.counted,diff:+p.counted-(+p.expected||0),note:p.note||''};
+    (db.cashCounts=db.cashCounts||[]).push(cc);audit(db,s.username,'日結盤點',{id:cc.id,date:cc.date,diff:cc.diff});return{ok:true,count:cc};
+  case 'cashCounts':return{ok:true,counts:(db.cashCounts||[]).filter(function(x){return(admin&&!p.storeId||x.storeId===sid())&&String(x.date).slice(0,(p.prefix||'').length)===(p.prefix||'')})};
+  case 'stockList':return{ok:true,stock:(db.stock||[]).filter(function(x){return x.storeId===sid()})};
+  case 'stockSet':var itm=db.items.filter(function(i){return i.id===p.itemId})[0];if(!itm)throw new Error('找不到品項');own(itm);db.stock=db.stock||[];
+    var sk=db.stock.filter(function(x){return x.storeId===itm.storeId&&x.itemId===p.itemId})[0];if(!sk){sk={storeId:itm.storeId,itemId:p.itemId,barcode:'',qty:0,safety:0,updated:''};db.stock.push(sk)}
+    if(p.barcode!==undefined)sk.barcode=String(p.barcode).trim();if(p.qty!==undefined&&p.qty!=='')sk.qty=+p.qty;if(p.add)sk.qty=+sk.qty+(+p.add);if(p.safety!==undefined&&p.safety!=='')sk.safety=+p.safety;sk.updated=now();
+    audit(db,s.username,'庫存設定',sk);return{ok:true,stock:sk};
   case 'saveItem':var it=p.id?db.items.filter(function(i){return i.id===p.id})[0]:null;
     if(!(p.name&&+p.price>=0))throw new Error('品名與價格必填');
     if(it){own(it);it.name=p.name;it.price=+p.price;it.active=p.active!==false}else{it={id:uid('i'),storeId:sid(),name:p.name,price:+p.price,active:true};db.items.push(it)}
@@ -34,7 +52,7 @@ function handle(db,sess,req){
   case 'sale':if(db.sales.some(function(x){return x.clientId&&x.clientId===p.clientId}))return{ok:true,dup:true};
     var tot=0;p.lines.forEach(function(l){tot+=l.price*l.qty});
     var sa={id:uid('S'),storeId:sid(),time:p.time||now(),account:s.username,lines:JSON.stringify(p.lines),total:tot,paid:+p.paid||tot,change:(+p.paid||tot)-tot,void:false,voidBy:'',clientId:p.clientId||''};
-    db.sales.push(sa);audit(db,s.username,'銷售',{id:sa.id,total:tot});return{ok:true,sale:sa};
+    db.sales.push(sa);audit(db,s.username,'銷售',{id:sa.id,total:tot});stockDeduct_(db.stock,sa.storeId,p.lines);return{ok:true,sale:sa};
   case 'expense':if(db.expenses.some(function(x){return x.clientId&&x.clientId===p.clientId}))return{ok:true,dup:true};
     if(!(+p.amount>0))throw new Error('金額必填');
     var ex={id:uid('E'),storeId:sid(),time:p.time||now(),account:s.username,category:p.category||'雜支',note:p.note||'',amount:+p.amount,void:false,voidBy:'',clientId:p.clientId||''};
@@ -62,3 +80,5 @@ function seed(db,pw){
   db.accounts.push(mkAcc('admin',pw.admin,'admin',''),mkAcc('linnei',pw.linnei,'store','st1'),mkAcc('gukeng',pw.gukeng,'store','st2'),mkAcc('guifei',pw.guifei,'store','st3'));
   audit(db,'system','建立示範資料',{});
 }
+
+function stockDeduct_(stock,st,lines){if(!stock||!stock.length)return;(lines||[]).forEach(function(l){var k=stock.filter(function(x){return x.storeId===st&&x.itemId===l.id})[0];if(k)k.qty=+k.qty-(+l.qty||0)})}
