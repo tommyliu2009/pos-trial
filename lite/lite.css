@@ -34,3 +34,7 @@ table{table-layout:fixed}td,th{word-break:break-word}
 @media(max-width:760px){.cart{position:relative}.grid{grid-template-columns:repeat(3,1fr)}.it{height:80px;font-size:16px}.it small{font-size:15px}}
 @media(max-width:430px){body{font-size:17px}header b{font-size:18px}#who{font-size:14px}.tabs button{padding:12px 4px;font-size:16px}.pays{grid-template-columns:repeat(3,1fr)}.dpanel{grid-template-columns:repeat(4,1fr)}.dpanel button{font-size:14px;padding:10px 2px}.tot{font-size:30px}td,th{font-size:14px;padding:6px 4px}.kpi{grid-template-columns:1fr 1fr}.kpi b{font-size:22px}}
 @media(max-width:370px){.grid{grid-template-columns:repeat(2,1fr)}}
+/* L3 作廢、L4 PIN */
+tr.void td{color:#aaa;text-decoration:line-through}tr.void td:nth-last-child(-n+2){text-decoration:none}.vbtn{padding:6px 10px;font-size:15px;min-height:40px}
+.pin{text-align:center;max-width:360px}.dots{font-size:34px;letter-spacing:10px;color:#1f6f5c}.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.pad button{font-size:28px;padding:16px 0;min-height:64px}
+#who{cursor:pointer}
