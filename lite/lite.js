@@ -8,31 +8,35 @@ const PAYS=['現金','LINE Pay','街口支付','悠遊卡','其他'];const CATS=
 const STORES=[['store2','林內驛站'],['store3','古坑咖啡合作社'],['store1','苗栗桂妃油茶']];
 /* L2：開頁即背景叫醒後端（GET doGet，極輕量） */
 let lastWarm=0;function warm(){if(MOCK||Date.now()-lastWarm<240e3)return;lastWarm=Date.now();fetch(window.POS_API_URL,{mode:'no-cors',cache:'no-store'}).catch(()=>{})}
-warm();document.addEventListener('visibilitychange',()=>{if(!document.hidden)warm()});
+warm();
 let S=LS.g('sess',{}),cart=[],pay='現金',tab='sale',disc=null,discOpen=false;
 /* ===== 後端 ===== */
 function mockDb(){let d=localStorage.getItem('mockdb');if(d)return JSON.parse(d);const db={};Object.keys(TABLES).forEach(k=>db[k]=[]);seed(db,window.MOCK_PW||{});
   const m={linnei:'store2',gukeng:'store3',guifei:'store1'};db.accounts.forEach(a=>{if(m[a.username])a.username=m[a.username]});localStorage.setItem('mockdb',JSON.stringify(db));return db}
 const mockSess={get:t=>JSON.parse(localStorage.getItem('ms_'+t)||'null'),set:(t,v)=>localStorage.setItem('ms_'+t,JSON.stringify(v)),del:t=>localStorage.removeItem('ms_'+t)};
-async function api(action,payload){const req={action,payload,token:S.token};let r;
+/* keepalive：關頁後仍盡力送出。瀏覽器不支援時改 sendBeacon（收不到回應，不可從佇列刪除）。 */
+function keepaliveOk(){try{const q=new Request(window.POS_API_URL,{method:'POST',keepalive:true,body:'{}',headers:{'Content-Type':'text/plain;charset=utf-8'}});return q.keepalive===true}catch(e){return false}}
+async function api(action,payload,opt){const req={action,payload,token:S.token};let r;
   if(MOCK){if(localStorage.getItem('mockOffline'))throw new Error('offline');await new Promise(z=>setTimeout(z,+(localStorage.getItem('mockDelay')||0)));const db=mockDb();
     const one=q=>{try{return handle(db,mockSess,q)}catch(e){return{ok:false,error:e.message}}};
     r=action==='batch'?{ok:true,results:payload.ops.map(o=>one({action:o.action,payload:o.payload,token:S.token}))}:one(req);
     if(r.results&&r.results[0]&&r.results[0].relogin)r={ok:false,relogin:true,error:r.results[0].error};localStorage.setItem('mockdb',JSON.stringify(db))}
-  else{const res=await fetch(window.POS_API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(req)});r=await res.json()}
+  else{const body=JSON.stringify(req),keepalive=!!(opt&&opt.keepalive);
+    if(keepalive&&(body.length>60000||!keepaliveOk())){if(body.length<=60000){try{navigator.sendBeacon&&navigator.sendBeacon(window.POS_API_URL,new Blob([body],{type:'text/plain;charset=utf-8'}))}catch(e){}}throw new Error('beacon')}
+    const res=await fetch(window.POS_API_URL,{method:'POST',keepalive,headers:{'Content-Type':'text/plain;charset=utf-8'},body});r=await res.json()}
   if(r.relogin){S.expired=true;LS.s('sess',S);netUI();if(action!=='login')loginView();throw new Error(r.error)}if(!r.ok)throw new Error(r.error);return r}
 /* ===== 上傳佇列（clientId 防重複；後端遇到相同 clientId 會回 dup） ===== */
 let busy=false,fails=0,noBatch=LS.g('noBatch',false),timer=null;
 const Q=()=>LS.g('queue',[]);
-function enqueue(action,payload){const q=Q();q.push({action,payload,u:S.username});LS.s('queue',q);netUI();clearTimeout(timer);timer=setTimeout(flush,800)}
-function drop(ids){LS.s('queue',Q().filter(x=>!ids.includes(x.payload.clientId)));}
+function enqueue(action,payload){const q=Q();q.push({action,payload,u:S.username});LS.s('queue',q);netUI();clearTimeout(timer);timer=setTimeout(flush,800);publishQueue()}
+function drop(ids){LS.s('queue',Q().filter(x=>!ids.includes(x.payload.clientId)));publishQueue()}
 async function flush(){if(busy||!S.token||S.expired)return;const q=Q().filter(x=>x.u===S.username);if(!q.length){if(VQ().some(x=>x.u===S.username)){busy=true;try{await flushVoids()}catch(e){}finally{busy=false;netUI()}}return}busy=true;netUI();
   try{const part=q.slice(0,25);
     if(!noBatch){try{const r=await api('batch',{ops:part});const ok=[];r.results.forEach((x,i)=>{const sv=x.sale||x.expense;if(sv&&sv.id)setSid(part[i].payload.clientId,sv.id);if(x.ok||!/逾時|offline|Lock|timeout/i.test(x.error||''))ok.push(part[i].payload.clientId);if(!x.ok)console.warn('上傳被拒',x.error)});drop(ok)}
       catch(e){if(/未知動作/.test(e.message)){noBatch=true;LS.s('noBatch',true)}else throw e}}
     if(noBatch){for(const x of part){try{const r=await api(x.action,x.payload);const sv=r.sale||r.expense;if(sv&&sv.id)setSid(x.payload.clientId,sv.id)}catch(e){if(/Failed|offline|Network|逾時/i.test(e.message))throw e;console.warn('上傳被拒',e.message)}drop([x.payload.clientId])}}
     await flushVoids();fails=0}catch(e){fails++}finally{busy=false;netUI()}
-  if(Q().some(x=>x.u===S.username)&&!S.expired)setTimeout(flush,fails?Math.min(60e3,2000*2**fails):100)}
+  if(Q().some(x=>x.u===S.username)&&!S.expired){clearTimeout(timer);timer=setTimeout(flush,fails?Math.min(60e3,2000*2**fails):100)}}
 /* ===== L3 快速作廢：未上傳＝本機刪除；已上傳＝背景佇列呼叫既有「作廢」 ===== */
 const VQ=()=>LS.g('vqueue',[]);
 function setSid(cid,id){const L=LS.g('ledger_'+S.storeId,[]);const x=L.find(y=>y.clientId===cid);if(x){x.sid=id;LS.s('ledger_'+S.storeId,L)}}
@@ -41,16 +45,45 @@ async function flushVoids(){for(const v of VQ().filter(x=>x.u===S.username)){
   if(!id){const r=await api('records',{prefix:v.time.slice(0,10)});const hit=(v.kind==='sale'?r.sales:r.expenses).find(x=>x.clientId===v.clientId);
     if(!hit){const all=VQ(),m=all.find(x=>x.clientId===v.clientId);m.miss=(m.miss||0)+1;LS.s('vqueue',m.miss>5?all.filter(x=>x!==m):all);if(m.miss>5)console.warn('作廢找不到原始交易，請到 Pro 版處理',v.clientId);continue}id=hit.id}
   try{await api('void',{kind:v.kind,id,reason:v.reason})}catch(e){if(/Failed|offline|Network|逾時/i.test(e.message))throw e;console.warn('作廢被拒',e.message)}
-  LS.s('vqueue',VQ().filter(x=>x.clientId!==v.clientId))}if(tab==='day'&&$('#body'))dayView()}
+  LS.s('vqueue',VQ().filter(x=>x.clientId!==v.clientId))}if(tab==='day'&&$('#body'))dayView();publishQueue()}
 function quickVoid(cid){const L=LS.g('ledger_'+S.storeId,[]),x=L.find(y=>y.clientId===cid);if(!x||x.void)return;
   const reason=prompt(`作廢這筆 ${money(x.total)}？請輸入原因（例：按錯、退貨）`);if(!reason||!reason.trim())return;
   const inQ=Q().some(y=>y.payload.clientId===cid);
   if(inQ){LS.s('queue',Q().filter(y=>y.payload.clientId!==cid));x.void='local'}
   else{const v=VQ();v.push({u:S.username,kind:x.k==='sale'?'sale':'exp',clientId:cid,sid:x.sid||'',time:x.time,reason:reason.trim()});LS.s('vqueue',v);x.void='queued'}
-  x.reason=reason.trim();LS.s('ledger_'+S.storeId,L);toast(inQ?'✔ 已作廢（尚未上傳，直接刪除）':'✔ 已作廢，背景同步中');dayView();clearTimeout(timer);timer=setTimeout(flush,300)}
+  x.reason=reason.trim();LS.s('ledger_'+S.storeId,L);publishQueue();toast(inQ?'✔ 已作廢（尚未上傳，直接刪除）':'✔ 已作廢，背景同步中');dayView();clearTimeout(timer);timer=setTimeout(flush,300)}
 function netUI(){const el=$('#net');if(!el)return;const n=Q().length+VQ().length,off=!navigator.onLine||localStorage.getItem('mockOffline');
   el.textContent=(S.expired?'請重新登入以上傳':off?'離線':busy?'上傳中':'已連線')+(n?`・待上傳 ${n}`:'')+(MOCK?'・測試模式':'');el.className=off||S.expired?'off':n?'wait':''}
 addEventListener('online',()=>{fails=0;flush()});addEventListener('offline',netUI);setInterval(()=>{if(!busy)flush()},15000);
+/* L8：切到背景或關頁時盡力送出。只有拿到 ok（含後端 clientId 回 dup）才移出佇列；送失敗或只送出 beacon 都留著，交給原本的重試。 */
+let leaving=null,pubChain=Promise.resolve();
+function ldb(){return new Promise((res,rej)=>{const r=indexedDB.open('pos-lite-bg',1);r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv')};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+function lpatch(db,fn){return new Promise((res,rej)=>{const tx=db.transaction('kv','readwrite'),st=tx.objectStore('kv'),g=st.get('snap');g.onsuccess=()=>{const next=fn(g.result||null);if(next)st.put(next,'snap')};tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
+function publishQueue(){if(MOCK||!('serviceWorker' in navigator)||!('SyncManager' in window)||!window.indexedDB)return;
+  const snap={token:S.token||'',api:window.POS_API_URL,ops:Q().filter(x=>x.u===S.username).slice(0,25),voids:VQ().filter(x=>x.u===S.username&&x.sid).slice(0,25),at:Date.now()};
+  pubChain=pubChain.then(async()=>{const reg=await navigator.serviceWorker.getRegistration();if(!reg||!reg.sync)return;const db=await ldb();
+    await lpatch(db,cur=>cur&&cur.at>snap.at?null:snap);if(snap.ops.length||snap.voids.length)await reg.sync.register('lite-flush')}).catch(()=>{})}
+function fitOps(list){const out=[];let budget=50000;for(const x of list){const n=JSON.stringify({action:x.action,payload:x.payload,token:S.token}).length;if(n>50000)continue;if(n>budget)break;budget-=n;out.push(x)}return out}
+function leaveOne(x){return api(x.action,x.payload,{keepalive:true}).then(r=>{const sv=r.sale||r.expense;if(sv&&sv.id)setSid(x.payload.clientId,sv.id);drop([x.payload.clientId])}).catch(()=>{})}
+function leaveVoid(v){return api('void',{kind:v.kind,id:v.sid,reason:v.reason},{keepalive:true}).then(()=>{LS.s('vqueue',VQ().filter(x=>x.clientId!==v.clientId));publishQueue()}).catch(()=>{})}
+function leaveDeliver(){if(!S.token||S.expired)return Promise.resolve();
+  const ops=Q().filter(x=>x.u===S.username).slice(0,25);
+  const voids=VQ().filter(v=>v.u===S.username&&v.sid&&!Q().some(x=>x.payload.clientId===v.clientId));
+  if(!ops.length&&!voids.length)return Promise.resolve();
+  const own=!busy;if(own){busy=true;netUI()}
+  const tasks=[];const batchBody=JSON.stringify({action:'batch',payload:{ops},token:S.token});
+  if(ops.length&&!noBatch&&batchBody.length<=50000){tasks.push(api('batch',{ops},{keepalive:true}).then(r=>{const ok=[];(r.results||[]).forEach((x,i)=>{const sv=x&&(x.sale||x.expense);if(sv&&sv.id&&ops[i])setSid(ops[i].payload.clientId,sv.id);if(x&&x.ok&&ops[i])ok.push(ops[i].payload.clientId)});if(ok.length)drop(ok)}).catch(e=>{if(/未知動作/.test(e.message||'')){noBatch=true;LS.s('noBatch',true);return Promise.all(fitOps(Q().filter(x=>x.u===S.username)).map(leaveOne))}}))}
+  else fitOps(ops).forEach(x=>tasks.push(leaveOne(x)));
+  voids.forEach(v=>{const n=JSON.stringify({action:'void',payload:{kind:v.kind,id:v.sid,reason:v.reason},token:S.token}).length;if(n<=50000)tasks.push(leaveVoid(v))});
+  return Promise.all(tasks).finally(()=>{if(own)busy=false;netUI();if((Q().some(x=>x.u===S.username)||VQ().some(x=>x.u===S.username))&&!S.expired){clearTimeout(timer);timer=setTimeout(flush,600)}})}
+function onHide(){if(leaving)return;clearTimeout(timer);publishQueue();leaving=Promise.resolve(leaveDeliver()).finally(()=>{leaving=null})}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)onHide();else warm()});
+window.addEventListener('pagehide',onHide);
+window.addEventListener('pageshow',e=>{if(e.persisted&&S.token&&!S.expired)flush()});
+if('serviceWorker' in navigator)navigator.serviceWorker.addEventListener('message',ev=>{const d=ev.data;if(!d||d.type!=='lite-acked')return;
+  Object.entries(d.sids||{}).forEach(([id,sid])=>setSid(id,sid));
+  if(d.voidIds&&d.voidIds.length)LS.s('vqueue',VQ().filter(x=>!d.voidIds.includes(x.clientId)));
+  if(d.ids&&d.ids.length)drop(d.ids);else publishQueue();netUI();if(tab==='day'&&$('#body'))dayView()});
 /* ===== 本機帳本（今日小計） ===== */
 function ledger(){const L=LS.g('ledger_'+S.storeId,[]),d=today();const k=L.filter(x=>x.day===d);if(k.length!==L.length)LS.s('ledger_'+S.storeId,k);return k}
 function addLedger(x){const L=ledger();L.push(x);LS.s('ledger_'+S.storeId,L)}
