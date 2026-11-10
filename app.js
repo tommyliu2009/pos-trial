@@ -62,12 +62,17 @@ function drawCart(){const t=cart.reduce((s,c)=>s+c.price*c.qty,0);$('#cart').inn
 async function checkout(){const t=cart.reduce((s,c)=>s+c.price*c.qty,0);if(!t)return;const p=$('#pm').value==='現金'?(+$('#paid').value||t):t;if(p<t)return alert('收款金額不足');
   try{const pm=$('#pm').value;const r=await queued('sale',{clientId:uid('c')+'|'+pm,lines:cart.map(({id,name,price,qty})=>({id,name,price,qty})),paid:p});msg((r.queued?'已暫存（離線），連線後自動上傳。':'結帳完成。')+' 找零 '+money(p-t));receipt({id:(r.sale&&r.sale.id)||'（離線暫存）',lines:cart.slice(),total:t,paid:p,pm,time:new Date()});cart=[];if(Object.keys(stock).length){await loadStock();posTab()}$('#paid').value='';drawCart()}catch(e){alert(e.message)}}
 /* ===== P4：電子明細（QR Code／LINE／系統分享），不需印表機 ===== */
+/* P10：qrcode.js 等到要產生 QR 才載入，首頁不先抓 */
+let qrReady=null;
+function loadQr(){if(qrReady)return qrReady;qrReady=new Promise((res,rej)=>{
+  const done=()=>{try{qrcode.stringToBytes=qrcode.stringToBytesFuncs['UTF-8'];res(qrcode)}catch(e){qrReady=null;rej(e)}};
+  if(typeof qrcode==='function')return done();
+  const s=document.createElement('script');s.src='qrcode.js';s.onload=done;s.onerror=()=>{qrReady=null;rej(new Error('qr'))};document.head.appendChild(s)});return qrReady}
 function receiptText(x){return[`${(S.storeName||'').replace(/（.*?）/,'')} 電子明細`,`單號 ${x.id}`,`時間 ${x.time.toLocaleString('zh-TW',{hour12:false})}`,'—',...x.lines.map(l=>`${l.name} ×${l.qty}  ${money(l.price*l.qty)}`),'—',`合計 ${money(x.total)}`,`付款 ${x.pm}${x.pm==='現金'?`　收 ${money(x.paid)}　找 ${money(x.paid-x.total)}`:''}`,'謝謝光臨'].join('\n')}
-function receipt(x){const txt=receiptText(x);let qr='';try{const q=qrcode(0,'M');q.addData(txt,'Byte');q.make();qr=q.createSvgTag({cellSize:4,margin:2,scalable:true})}catch(e){qr='<p>明細太長，無法產生 QR Code，請用 LINE 分享。</p>'}
+async function receipt(x){const txt=receiptText(x);let qr='';try{const lib=await loadQr();const q=lib(0,'M');q.addData(txt,'Byte');q.make();qr=q.createSvgTag({cellSize:4,margin:2,scalable:true})}catch(e){qr='<p>明細太長，無法產生 QR Code，請用 LINE 分享。</p>'}
   const m=document.createElement('div');m.className='modal';m.innerHTML=`<div class="card rcpt"><h3>電子明細</h3><div class="qr">${qr}</div><pre>${esc(txt)}</pre>
   <div class="rbtns"><a class="btn line" target="_blank" rel="noopener" href="https://line.me/R/share?text=${encodeURIComponent(txt)}">用 LINE 分享</a>${navigator.share?'<button id="shr">其他分享</button>':''}<button class="sec" id="rx">關閉</button></div><small>客人用手機相機掃 QR Code 就能看到明細文字。</small></div>`;
   document.body.appendChild(m);m.querySelector('#rx').onclick=()=>m.remove();const sh=m.querySelector('#shr');if(sh)sh.onclick=()=>navigator.share({text:txt}).catch(()=>{})}
-qrcode.stringToBytes=qrcode.stringToBytesFuncs['UTF-8'];
 function expTab(){$('#v').innerHTML=`<div class="card" style="max-width:480px"><h3>記一筆支出</h3><select id="cat">${['進貨','材料','雜支','水電','交通','其他'].map(c=>`<option>${c}</option>`).join('')}</select><br><br><input id="amt" type="number" inputmode="numeric" placeholder="金額"><br><br><input id="note" placeholder="說明（例：菜市場買菜）"><br><br><button class="big" id="save">儲存支出</button></div>`;
   $('#save').onclick=async()=>{try{const r=await queued('expense',{category:$('#cat').value,amount:+$('#amt').value,note:$('#note').value});msg(r.queued?'已暫存（離線）':'已記錄支出');$('#amt').value='';$('#note').value=''}catch(e){alert(e.message)}}}
 function itemsTab(){$('#v').innerHTML=`<div class="card"><h3>品項與價格</h3><table class="itbl"><tr><th>品名</th><th>價格</th><th>上架</th><th></th></tr>${items.map(i=>`<tr><td><input value="${esc(i.name)}" id="n_${i.id}"></td><td><input type="number" value="${i.price}" id="p_${i.id}"></td><td><label><input type="checkbox" style="width:auto" id="a_${i.id}" ${tb(i.active)?'checked':''}>上架</label></td><td><button onclick="saveItem('${i.id}')">存</button></td></tr>`).join('')}
